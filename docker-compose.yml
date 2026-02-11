@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  # --- Existing PostGIS Database ---
+  db:
+    image: kartoza/postgis:15
+    container_name: stealth-db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASS=postgres
+      - ALLOW_IP_RANGE=0.0.0.0/0
+    ports:
+      - "5433:5432"
+
+  # --- New Local OpenRouteService ---
+  ors-app:
+    container_name: stealth-ors
+    image: openrouteservice/openrouteservice:latest
+    ports:
+      - "8082:8082"
+    environment:
+      - REBUILD_GRAPHS=True # Build the map on first start
+      - CONTAINER_LOG_LEVEL=INFO
+      - XMS=1g
+      - XMX=4g # Increase if Berlin map fails to load
+      # Point to your Berlin file inside the container
+      - ors.engine.profile_default.build.source_file=/home/ors/files/berlin.osm.pbf
+    volumes:
+      - ./ors-docker:/home/ors
