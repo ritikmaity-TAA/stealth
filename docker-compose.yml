@@ -32,6 +32,7 @@ services:
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_DATASOURCE_PASSWORD: postgres
       GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY} # Load from your local .env file
+      JWT_SECRET: ${JWT_SECRET} # Load from your local .env file
     networks:
       - stealth-network
 

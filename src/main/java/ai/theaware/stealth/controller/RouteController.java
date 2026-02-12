@@ -1,41 +1,41 @@
 package ai.theaware.stealth.controller;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import java.util.Map;
+
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import ai.theaware.stealth.dto.RouteResponseDTO;
+import ai.theaware.stealth.entity.Users;
 import ai.theaware.stealth.service.GoogleRoutingService;
 
 @RestController
 @RequestMapping("/api/v1/routes")
 public class RouteController {
 
-    @Autowired
-    private GoogleRoutingService routingService;
+    private final GoogleRoutingService googleRoutingService;
 
-    @GetMapping("/compare")
-    public ResponseEntity<?> getRouteComparison(
-            @RequestParam(name = "sLat") Double sLat,
-            @RequestParam(name = "sLon") Double sLon,   
-            @RequestParam(name = "dLat") Double dLat,
-            @RequestParam(name = "dLon") Double dLon) {
-        
-        // Simple manual check to provide a better error message than the log you saw
-        if (sLat == null || sLon == null || dLat == null || dLon == null) {
-            return ResponseEntity.badRequest()
-                .body("Error: Please provide all coordinates: sLaa, sLon, dLat, dLon");
-        }
+    // Inject only the Service
+    public RouteController(GoogleRoutingService googleRoutingService) {
+        this.googleRoutingService = googleRoutingService;
+    }
 
-        try {
-            RouteResponseDTO routes = routingService.getCalculatedRoutes(sLat, sLon, dLat, dLon);
-            return ResponseEntity.ok(routes);
-        } catch (Exception e) {
-            return ResponseEntity.internalServerError()
-                .body("Google API Error: " + e.getMessage());
-        }
+    @GetMapping
+    public ResponseEntity<?> getRoute(
+            @RequestParam Double sLat, @RequestParam Double sLon,
+            @RequestParam Double dLat, @RequestParam Double dLon,
+            @AuthenticationPrincipal Users user) { // Dynamically injected from JWT Filter
+
+        // Trigger the background task
+        googleRoutingService.getSmartRoute(sLat, sLon, dLat, dLon);
+
+        // Return 202 Accepted (Standard for Async tasks)
+        return ResponseEntity.accepted().body(Map.of(
+            "message", "Route processing initiated asynchronously.",
+            "status", "processing"
+        ));
     }
 }
