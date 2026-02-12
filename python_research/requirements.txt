@@ -1,0 +1,6 @@
+requests
+pykrige
+numpy
+pandas
+polyline
+openmeteo-requests
