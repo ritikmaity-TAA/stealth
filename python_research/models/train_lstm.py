@@ -5,7 +5,7 @@ from sklearn.metrics import r2_score
 from tensorflow import keras
 from tensorflow.keras import layers
 import matplotlib.pyplot as plt
-
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # 1. Load and Clean
 data = pd.read_csv("../data/durgapur_final.csv")
@@ -132,12 +132,11 @@ x = layers.Concatenate()([feature_input, embedding])
 # ---- Encoder ----
 x = layers.LSTM(
     128,
-    dropout=0.2,
     return_sequences=True
 )(x)
 
 x = layers.LSTM(
-    64,
+    128,
     dropout=0.2,
     return_sequences=False
 )(x)
@@ -147,9 +146,9 @@ x = layers.LSTM(
 # bottleneck = layers.BatchNormalization()(bottleneck)
 
 # ---- Decoder ----
-x = layers.Dense(64, activation="relu")(x)
+x = layers.Dense(256, activation="relu")(x)
 x = layers.BatchNormalization()(x)
-x = layers.Dropout(0.3)(x)
+x = layers.Dropout(0.5)(x)
 
 # ---- TimeDistributed Output ----
 output = layers.Dense(look_ahead)(x)
@@ -213,6 +212,28 @@ actual = y_test
 print("Max Predicted AQI (t+1):", np.max(pred[:, 0]))
 print("Min Predicted AQI (t+1):", np.min(pred[:, 0]))
 print("Sample pred:", pred[0][:5])
+
+rmse = np.sqrt(mean_squared_error(actual.flatten(), pred.flatten()))
+print("RMSE:", rmse)
+mae = mean_absolute_error(y_test.flatten(), pred.flatten())
+print("MAE:", mae)
+
+baseline_pred = np.repeat(
+    X_test[:, -1, 0:1],  # last AQI
+    look_ahead,
+    axis=1
+)
+
+baseline_rmse = np.sqrt(mean_squared_error(y_test.flatten(), baseline_pred.flatten()))
+print("Baseline RMSE:", baseline_rmse)
+
+
+for i in range(look_ahead):
+    step_rmse = np.sqrt(mean_squared_error(
+        y_test[:, i],
+        pred[:, i]
+    ))
+    print(f"Hour {i+1} RMSE:", step_rmse)
 
 # R2 for next 12 (t+1)
 for i in range(look_ahead):
