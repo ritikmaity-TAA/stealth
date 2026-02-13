@@ -6,6 +6,7 @@ from tensorflow import keras
 from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+import joblib
 
 # 1. Load and Clean
 data = pd.read_csv("../data/durgapur_final.csv")
@@ -18,7 +19,8 @@ continuous_cols = [
 cyclical_cols = [
     "hour_sin", "hour_cos",
     "date_sin", "date_cos",
-    "month_sin", "month_cos"
+    "month_sin", "month_cos",
+    "year"
 ]
 
 feature_cols = continuous_cols + cyclical_cols
@@ -137,10 +139,9 @@ x = layers.LSTM(
 
 x = layers.LSTM(
     128,
-    dropout=0.2,
     return_sequences=True
 )(x)
-x = layers.LSTM(64, return_sequences=False)(x)
+x = layers.LSTM(64, dropout=0.2, return_sequences=False)(x)
 
 # ---- Bottleneck ----
 # bottleneck = layers.Dense(64, activation="relu")(encoder)
@@ -149,7 +150,7 @@ x = layers.LSTM(64, return_sequences=False)(x)
 # ---- Decoder ----
 x = layers.Dense(256, activation="relu")(x)
 x = layers.BatchNormalization()(x)
-x = layers.Dropout(0.5)(x)
+x = layers.Dropout(0.3)(x)
 
 # ---- TimeDistributed Output ----
 output = layers.Dense(look_ahead)(x)
@@ -194,13 +195,23 @@ reduce_lr = keras.callbacks.ReduceLROnPlateau(
     min_lr=1e-5
 )
 
+
+checkpoint = keras.callbacks.ModelCheckpoint(
+    filepath="best_aqi_model.keras", 
+    monitor="val_loss",              
+    save_best_only=True,             
+    mode="min",                      
+    verbose=1                        
+)
+
+
 model.fit(
     [X_train, station_train],
     y_train,
     epochs=20,
     batch_size=32,
     validation_data=([X_test, station_test], y_test),
-    callbacks=[early_stop, reduce_lr]
+    callbacks=[early_stop, reduce_lr, checkpoint] 
 )
 
 
@@ -278,3 +289,15 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
+# print("--- MODEL INPUT FEATURES REQUIRED ---")
+# for i, col in enumerate(feature_cols):
+#     print(f"Feature {i}: {col}")
+
+# print("\n--- INPUT SHAPES ---")
+# print(f"Main Features: (Batch_Size, {look_back}, {len(feature_cols)})")
+# print(f"Station ID:    (Batch_Size, 1)")
+
+# Save the final weights after the evaluation block
+model.save("durgapur_aqi_v1.h5") 
+joblib.dump(scaler_X,"scaler_x.pkl")
+print("Model saved successfully!")
