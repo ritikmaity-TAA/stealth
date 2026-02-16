@@ -113,7 +113,6 @@ async def predict_all_stations(data: ForecastRequest):
         if len(combined_history) < 24:
             return {"status": "error", "message": "Google provided less than 24h data"}
 
-        # --- DIMAAG WALA STEP: SYNC TIME WITH HISTORY ---
         # 1. Google ke last history point ka time lo (UTC format mein hota hai)
         last_history_time_str = aqi_res["history"][-1]["time"] 
         # 2. Parse UTC and convert to IST (+5:30)
