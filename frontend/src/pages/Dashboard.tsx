@@ -39,6 +39,7 @@ const Dashboard: React.FC = () => {
     try {
       const response = await fetch('http://localhost:8080/api/routes/process', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sLat: origin.lat,
@@ -48,7 +49,10 @@ const Dashboard: React.FC = () => {
         }),
       });
 
-      if (!response.ok) throw new Error('Backend error');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(`Backend error: ${response.status} - ${JSON.stringify(errorData)}`);
+      }
       const data = await response.json();
 
       // Flexible Data Hydration
@@ -78,6 +82,7 @@ const Dashboard: React.FC = () => {
       try {
         const predictionResponse = await fetch('http://localhost:8080/api/routes/predict', {
           method: 'GET',
+          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
         });
 
