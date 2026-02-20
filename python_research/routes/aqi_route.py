@@ -63,6 +63,8 @@ async def analyze_routes(data: JavaRouteRequest):
        
         comparisons[f"Route_{i+1}"] = {
             # "avg_exposure_aqi": round(avg_exposure, 2),
+            "distance": route.distance,
+            "duration": route.duration,
             "avg_pm25": avg_pm25,
             "avg_pm10": avg_pm10,
             "avg_co": avg_co,
@@ -148,16 +150,10 @@ async def predict_all_stations(data: RouteRequest):
         # ---- Step 1: Fetch weather + AQI in parallel for ALL stations ----
 
         async def fetch_station_data(station_id, coords):
-            weather_task = fetch_google_weather_history(
-                coords["lat"], coords["lon"], http_client
-            )
-            aqi_task = fetch_google_aqi_history(
-                coords["lat"], coords["lon"], http_client
-            )
+            weather_task = fetch_google_weather_history(coords["lat"], coords["lon"], http_client)
+            aqi_task = fetch_google_aqi_history(coords["lat"], coords["lon"], http_client)
 
-            weather_res, aqi_res = await asyncio.gather(
-                weather_task, aqi_task
-            )
+            weather_res, aqi_res = await asyncio.gather(weather_task, aqi_task)
 
             return station_id, weather_res, aqi_res
 
