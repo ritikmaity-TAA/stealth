@@ -22,7 +22,7 @@ const AlternativeRoutes: React.FC<AlternativeRoutesProps> = ({
     return 'badge-high';
   };
 
-  const durationSuffix = routeInfo ? routeInfo.duration : undefined;
+  // Removed durationSuffix; use route.duration directly
 
   return (
     <section className="dashboard-card routes-card">
@@ -56,8 +56,8 @@ const AlternativeRoutes: React.FC<AlternativeRoutesProps> = ({
               <div>
                 <p className="route-name">{route.name}</p>
                 <p className="route-meta">
-                  {(durationSuffix ?? route.duration) != null && (
-                    <span>● {(durationSuffix ?? route.duration)} min</span>
+                  {route.duration != null && (
+                    <span>● {route.duration}</span>
                   )}
                   {route.distance != null && (
                     <span>● {route.distance}</span>

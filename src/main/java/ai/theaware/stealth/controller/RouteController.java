@@ -9,9 +9,11 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import ai.theaware.stealth.dto.RouteRequestDTO;
+import ai.theaware.stealth.dto.RouteResponseDTO;
 import ai.theaware.stealth.entity.Users;
 import ai.theaware.stealth.service.GoogleRoutingService;
 import ai.theaware.stealth.service.PredictionService;
@@ -21,16 +23,26 @@ import ai.theaware.stealth.service.UserService;
 @RequestMapping("/api/routes")
 public class RouteController {
 
+    private final PredictionService predictionService;
     private final GoogleRoutingService googleRoutingService;
     private final UserService userService;
-    private final PredictionService predictionService;
 
-    public RouteController(GoogleRoutingService googleRoutingService,
-                           UserService userService,
+    public RouteController(GoogleRoutingService googleRoutingService, UserService userService,
                            PredictionService predictionService) {
         this.googleRoutingService = googleRoutingService;
-        this.userService = userService;
         this.predictionService = predictionService;
+        this.userService = userService;
+    }
+
+    @GetMapping("/debug-resampled")
+    public ResponseEntity<RouteResponseDTO> getDebugResampled(
+            @RequestParam Double sLat,
+            @RequestParam Double sLon,
+            @RequestParam Double dLat,
+            @RequestParam Double dLon) {
+
+        RouteResponseDTO processedData = googleRoutingService.getProcessedRouteDTO(sLat, sLon, dLat, dLon);
+        return ResponseEntity.ok(processedData);
     }
 
     @PostMapping("/process")
@@ -44,14 +56,6 @@ public class RouteController {
 
         String email = principal.getAttribute("email");
         Users user = userService.findByEmail(email);
-
-        predictionService.triggerPrediction(
-        email,
-        request.getSLat(),
-        request.getSLon(),
-        request.getDLat(),
-        request.getDLon()
-    );
 
         Object result = googleRoutingService.processRoute(
                 request.getSLat(),
@@ -76,5 +80,20 @@ public class RouteController {
         Object result = predictionService.getPrediction(email);
         return ResponseEntity.ok(result);
     }
-}
 
+    @GetMapping("/raw")
+    public ResponseEntity<?> getRawRoute(
+            @RequestParam Double sLat,
+            @RequestParam Double sLon,
+            @RequestParam Double dLat,
+            @RequestParam Double dLon,
+            @AuthenticationPrincipal OAuth2User principal) {
+
+        if (principal == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "User not authenticated"));
+        }
+
+        RouteResponseDTO result = googleRoutingService.getRawRouteDTO(sLat, sLon, dLat, dLon);
+        return ResponseEntity.ok(result);
+    }
+}

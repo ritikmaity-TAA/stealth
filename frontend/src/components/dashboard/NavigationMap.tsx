@@ -3,7 +3,15 @@ import {
   GoogleMap,
   useJsApiLoader,
   DirectionsRenderer,
+  OverlayView,
 } from '@react-google-maps/api';
+
+interface AQIMarker {
+  location: [number, number]; // [lat, lng]
+  aqi: number;
+  pm25?: number;
+  pm10?: number;
+}
 
 interface NavigationMapProps {
   isDarkMode: boolean;
@@ -14,6 +22,7 @@ interface NavigationMapProps {
   backendRoutes?: any[];
   selectedRouteIndex?: number | null;
   onRouteSelect?: (index: number | null) => void;
+  aqiMarkers?: AQIMarker[];
 }
 
 const mapContainerStyle = {
@@ -29,6 +38,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   backendRoutes,
   selectedRouteIndex: externalSelectedIndex,
   onRouteSelect,
+  aqiMarkers = [],
 }) => {
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
@@ -84,42 +94,8 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
   }, [onOriginChange]);
 
   // ---------------------------
-  // REQUEST ROUTE
-  // ---------------------------
-  const requestRoute = useCallback(
-    (origin: google.maps.LatLngLiteral, destinationOverride: google.maps.LatLngLiteral | null | undefined) => {
-      if (!window.google || !destinationOverride) return;
-
-      const currentRequestId = ++requestIdRef.current;
-      const service = new window.google.maps.DirectionsService();
-
-      service.route(
-        {
-          origin,
-          destination: destinationOverride,
-          travelMode: window.google.maps.TravelMode.DRIVING,
-        },
-        (result, status) => {
-          if (status === "OK" && result && currentRequestId === requestIdRef.current) {
-            setDirections(result);
-
-            const leg = result.routes[0].legs[0];
-            onRouteCalculated({
-              distance: leg.distance?.text || "",
-              duration: leg.duration?.text || "",
-            });
-          }
-        }
-      );
-    },
-    [onRouteCalculated]
-  );
-
-  useEffect(() => {
-    if (!currentLocation || !destinationOverride) return;
-    setDirections(null);
-    requestRoute(currentLocation, destinationOverride);
-  }, [currentLocation, destinationOverride, requestRoute]);
+  // Do not use frontend Google Maps Directions API for route calculation.
+  // Only display routes using backend coordinates from /api/routes/raw.
 
   // ---------------------------
   // USER BLUE DOT MARKER
@@ -168,7 +144,7 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
     }
   }, [destinationOverride]);
 
-  // Render backend alternative routes (if provided) as polylines
+  // Render backend alternative routes (if provided) as polylines (for /api/routes/raw)
   useEffect(() => {
     // clear previous polylines and listeners
     polylinesRef.current.forEach((p) => {
@@ -179,169 +155,54 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
       } catch (e) { }
       p.setMap(null);
     });
-    // keep array sized to backendRoutes length to preserve index mapping
     polylinesRef.current = [];
-    distancesRef.current = [];
-    // reset selected index when routes change
-    setSelectedPolyIndex(null);
 
     if (!mapRef.current || !window.google || !Array.isArray(backendRoutes)) return;
 
-    const currentPolyRequest = ++polyRequestIdRef.current;
-
+    // Collect all coordinates for bounds calculation
+    let allCoords: google.maps.LatLngLiteral[] = [];
     backendRoutes.forEach((r: any, idx: number) => {
-      // try common path field names
-      const pathArrRaw: any = r.path || r.cleaned || r.coordinates || r.coords || r.polyline || r.overview_polyline || [];
-      let pathArr: any[] = [];
-
-      // handle encoded polyline string
-      if (typeof pathArrRaw === 'string' && window.google && window.google.maps && window.google.maps.geometry && window.google.maps.geometry.encoding) {
-        try {
-          const decoded = window.google.maps.geometry.encoding.decodePath(pathArrRaw);
-          pathArr = decoded.map((p: any) => ({ lat: p.lat(), lng: p.lng() }));
-        } catch (e) {
-          pathArr = [];
-        }
-      } else if (Array.isArray(pathArrRaw)) {
-        pathArr = pathArrRaw;
-      } else if (pathArrRaw && pathArrRaw.points && typeof pathArrRaw.points === 'string' && window.google && window.google.maps && window.google.maps.geometry && window.google.maps.geometry.encoding) {
-        try {
-          const decoded = window.google.maps.geometry.encoding.decodePath(pathArrRaw.points);
-          pathArr = decoded.map((p: any) => ({ lat: p.lat(), lng: p.lng() }));
-        } catch (e) {
-          pathArr = [];
-        }
-      }
+      const pathArr: any[] = r.path || r.cleaned || r.coordinates || r.coords || [];
       if (!Array.isArray(pathArr) || pathArr.length === 0) return;
-
       const coords = pathArr.map((pt: any) => {
         if (pt.lat !== undefined && pt.lng !== undefined) return { lat: Number(pt.lat), lng: Number(pt.lng) };
         if (pt[0] !== undefined && pt[1] !== undefined) return { lat: Number(pt[0]), lng: Number(pt[1]) };
         return null;
       }).filter(Boolean) as google.maps.LatLngLiteral[];
+      if (coords.length === 0) return;
 
-      if (coords.length < 2) return;
+      allCoords = allCoords.concat(coords);
 
-      // Use backend coords as waypoints to request a Google Directions path that matches Google's routing
-      const service = new window.google.maps.DirectionsService();
+      // Always create with light blue (unselected) style
+      const poly = new window.google.maps.Polyline({
+        path: coords,
+        strokeColor: '#8AB4F8',
+        strokeOpacity: 0.7,
+        strokeWeight: 4,
+        zIndex: 5 + idx,
+      });
+      poly.setMap(mapRef.current);
+      polylinesRef.current.push(poly as any);
 
-      // Build origin, destination, and waypoints. If there are too many intermediate points,
-      // sample evenly to keep the number reasonable for the Directions API.
-      const origin = coords[0];
-      const destination = coords[coords.length - 1];
-      let intermediate = coords.slice(1, coords.length - 1);
-
-      // Directions API waypoint limits exist; keep within Google's limits but prefer
-      // to send as many ordered intermediate points as possible so the returned
-      // Google route follows the backend coordinates closely.
-      const MAX_WAYPOINTS = 23; // conservative upper bound for client-side usage
-      if (intermediate.length > MAX_WAYPOINTS) {
-        // pick evenly-spaced points but always include first/last intermediates
-        const sampled: google.maps.LatLngLiteral[] = [];
-        const step = intermediate.length / MAX_WAYPOINTS;
-        for (let i = 0; i < MAX_WAYPOINTS; i++) {
-          const idxSample = Math.min(intermediate.length - 1, Math.floor(i * step));
-          sampled.push(intermediate[idxSample]);
-        }
-        intermediate = sampled;
-      }
-
-      // Use stopover=true to instruct DirectionsService to pass through each waypoint
-      const waypoints = intermediate.map((p) => ({ location: p as google.maps.LatLngLiteral, stopover: true }));
-
-      service.route(
-        {
-          origin,
-          destination,
-          waypoints,
-          travelMode: window.google.maps.TravelMode.DRIVING,
-          optimizeWaypoints: false,
-        },
-        (result, status) => {
-          // ignore stale requests
-          if (currentPolyRequest !== polyRequestIdRef.current) return;
-          if (status !== 'OK' || !result) return;
-
-          // clear any previous polyline at this index (we already cleared all at start)
-          const routePath = result.routes[0].overview_path || [];
-          const latLngs = routePath.map((p: any) => ({ lat: p.lat(), lng: p.lng() }));
-
-          if (latLngs.length === 0) return;
-
-          // ensure polyline starts at origin and ends at destination to avoid visual gaps
-          const approxEqual = (a: google.maps.LatLngLiteral, b: google.maps.LatLngLiteral) => {
-            const eps = 1e-6;
-            return Math.abs(a.lat - b.lat) < eps && Math.abs(a.lng - b.lng) < eps;
-          };
-
-          // add origin if missing at start
-          if (coords.length > 0) {
-            const originCoord = coords[0];
-            if (!approxEqual(latLngs[0], originCoord)) {
-              latLngs.unshift({ lat: originCoord.lat, lng: originCoord.lng });
-            }
-            const destCoord = coords[coords.length - 1];
-            if (!approxEqual(latLngs[latLngs.length - 1], destCoord)) {
-              latLngs.push({ lat: destCoord.lat, lng: destCoord.lng });
-            }
-          }
-
-          // remove consecutive duplicate points which can confuse rendering
-          for (let i = latLngs.length - 1; i > 0; i--) {
-            if (approxEqual(latLngs[i], latLngs[i - 1])) {
-              latLngs.splice(i, 1);
-            }
-          }
-
-          // determine total distance for this returned route (sum of legs)
-          let totalMeters = 0;
-          try {
-            totalMeters = result.routes[0].legs.reduce((acc: number, leg: any) => acc + (leg.distance?.value || 0), 0);
-          } catch (e) {
-            totalMeters = 0;
-          }
-
-          distancesRef.current[idx] = totalMeters;
-
-          // determine color: selected (dark blue) vs unselected (light blue)
-          const DARK_BLUE = '#1A73E8'; // selected route
-          const LIGHT_BLUE = '#8AB4F8'; // alternate routes
-          const selected = selectedPolyIndex !== null ? idx === selectedPolyIndex : false;
-          // if none selected yet, we'll choose the shortest route once we have at least one distance
-          if (selectedPolyIndex === null) {
-            // compute shortest among known distances
-            const known = distancesRef.current.map((d, i) => (typeof d === 'number' ? { d, i } : null)).filter(Boolean) as { d: number; i: number }[];
-            if (known.length > 0) {
-              const min = known.reduce((a, b) => (a.d <= b.d ? a : b));
-              setSelectedPolyIndex((prev) => (prev === null ? min.i : prev));
-            }
-          }
-
-          const strokeWeight = selected ? 6 : 4;
-          const strokeOpacity = selected ? 0.95 : 0.7;
-          const color = selected ? DARK_BLUE : LIGHT_BLUE;
-
-          const poly = new window.google.maps.Polyline({
-            path: latLngs,
-            strokeColor: color,
-            strokeOpacity,
-            strokeWeight,
-            zIndex: selected ? 100 : 5 + idx,
-          });
-
-          poly.setMap(mapRef.current);
-
-          // ensure polylinesRef maps idx -> poly so we can update by index later
-          polylinesRef.current[idx] = poly;
-
-          // click toggles selection to this route (mimic Google Maps behavior)
-          poly.addListener('click', () => {
-            setSelectedPolyIndex(idx);
-            onRouteSelect?.(idx);
-          });
-        }
-      );
+      // Add click/tap event to select this route
+      poly.addListener('click', () => {
+        setSelectedPolyIndex(idx);
+        onRouteSelect?.(idx);
+      });
     });
+
+    // Zoom out to fit all routes, mimicking Google Maps
+    if (allCoords.length > 0 && mapRef.current && window.google && window.google.maps.LatLngBounds) {
+      const bounds = new window.google.maps.LatLngBounds();
+      allCoords.forEach((coord) => bounds.extend(coord));
+      mapRef.current.fitBounds(bounds, 40); // 60px padding for nice view
+    }
+  }, [backendRoutes, onRouteSelect]);
+
+  // Only set selected route index to 0 if backendRoutes change and there is no selection
+  // Do not auto-select any route by default; user must click to select
+  useEffect(() => {
+    setSelectedPolyIndex(null);
   }, [backendRoutes]);
 
   const onLoad = useCallback((map: google.maps.Map) => {
@@ -351,23 +212,41 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
     if (destinationMarkerRef.current) destinationMarkerRef.current.setMap(map);
   }, []);
 
-  // Update polyline styles when selection changes
+  // Update polyline styles when selection changes and move map to selected route
   useEffect(() => {
-    if (!window.google) return;
-    const DARK_BLUE = '#1A73E8';
-    const LIGHT_BLUE = '#8AB4F8';
-
+    if (!window.google || !Array.isArray(backendRoutes)) return;
     polylinesRef.current.forEach((poly, idx) => {
       if (!poly) return;
-      const selected = selectedPolyIndex === idx;
-      poly.setOptions({
-        strokeColor: selected ? DARK_BLUE : LIGHT_BLUE,
-        strokeWeight: selected ? 6 : 4,
-        strokeOpacity: selected ? 0.95 : 0.7,
-        zIndex: selected ? 100 : 5 + idx,
-      });
+      if (selectedPolyIndex === idx) {
+        poly.setOptions({
+          strokeColor: '#1A73E8',
+          strokeWeight: 6,
+          strokeOpacity: 0.95,
+          zIndex: 100,
+        });
+        // Move map to fit this route
+        const r = backendRoutes[idx];
+        const pathArr = r.path || r.cleaned || r.coordinates || r.coords || [];
+        const coords = pathArr.map((pt: any) => {
+          if (pt.lat !== undefined && pt.lng !== undefined) return { lat: Number(pt.lat), lng: Number(pt.lng) };
+          if (pt[0] !== undefined && pt[1] !== undefined) return { lat: Number(pt[0]), lng: Number(pt[1]) };
+          return null;
+        }).filter(Boolean);
+        if (coords.length > 0 && mapRef.current && window.google && window.google.maps.LatLngBounds) {
+          const bounds = new window.google.maps.LatLngBounds();
+          coords.forEach((coord: any) => bounds.extend(coord));
+          mapRef.current.fitBounds(bounds, 60);
+        }
+      } else {
+        poly.setOptions({
+          strokeColor: '#8AB4F8',
+          strokeWeight: 4,
+          strokeOpacity: 0.7,
+          zIndex: 5 + idx,
+        });
+      }
     });
-  }, [selectedPolyIndex]);
+  }, [selectedPolyIndex, backendRoutes]);
 
   const handleResetPosition = useCallback(() => {
     if (mapRef.current && currentLocation) {
@@ -405,6 +284,34 @@ const NavigationMap: React.FC<NavigationMapProps> = ({
             options={{ suppressMarkers: true }}
           />
         )}
+        {/* Render AQI markers if provided */}
+        {/* Render AQI markers using OverlayView for correct placement */}
+        {Array.isArray(aqiMarkers) && aqiMarkers.map((marker: AQIMarker, idx: number) => (
+          <OverlayView
+            key={`aqi-marker-${idx}`}
+            position={{ lat: marker.location[0], lng: marker.location[1] }}
+            mapPaneName={OverlayView.OVERLAY_MOUSE_TARGET}
+          >
+            <div
+              style={{
+                background: 'rgba(255,255,255,0.98)',
+                border: '2px solid #1A73E8',
+                borderRadius: '8px',
+                padding: '4px 8px',
+                fontWeight: 600,
+                color: '#1A1A1A',
+                fontSize: '13px',
+                boxShadow: '0 2px 8px rgba(26,115,232,0.10)',
+                minWidth: '54px',
+                textAlign: 'center',
+                pointerEvents: 'auto',
+                lineHeight: 1.3,
+              }}
+            >
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#000000', marginBottom: 1 }}>AQI: <span style={{ color: '#1A73E8' }}>{marker.aqi}</span></div>
+            </div>
+          </OverlayView>
+        ))}
       </GoogleMap>
       <button
         onClick={handleResetPosition}
