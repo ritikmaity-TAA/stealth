@@ -24,7 +24,10 @@ const Dashboard: React.FC = () => {
     kgSaved?: number | null;
     goalPercent?: number | null;
   } | null>(null);
-  const [sensors, setSensors] = useState<SensorData | null>(null);
+  // Store PM2.5, PM10, CO for each route from /api/routes/process
+  const [routeSensorData, setRouteSensorData] = useState<any[]>([]);
+  // Store AQI marker data for all routes
+  const [aqiMarkers, setAqiMarkers] = useState<{ location: [number, number]; aqi: number }[]>([]);
   const [forecast, setForecast] = useState<ForecastBar[] | null>(null);
 
   useEffect(() => {
@@ -36,9 +39,45 @@ const Dashboard: React.FC = () => {
 
   // --- REAL-TIME BACKEND SYNC ---
   // This triggers every time the origin (user moving) OR destination (user searching) changes
-  const fetchEcoData = useCallback(async (origin: google.maps.LatLngLiteral, dest: google.maps.LatLngLiteral) => {
+  // const fetchEcoData = useCallback(async (origin: google.maps.LatLngLiteral, dest: google.maps.LatLngLiteral) => { ... }, []);
+
+  // --- FOR MARKERS: Fetch from /api/routes/raw and mark each coordinate as a marker ---
+  const fetchRawRouteMarkers = useCallback(async (origin: google.maps.LatLngLiteral, dest: google.maps.LatLngLiteral) => {
     try {
-      const response = await fetch('http://localhost:8080/api/routes/process', {
+      const params = new URLSearchParams({
+        sLat: origin.lat.toString(),
+        sLon: origin.lng.toString(),
+        dLat: dest.lat.toString(),
+        dLon: dest.lng.toString(),
+      });
+      // 1. Fetch route coordinates for display
+      const response = await fetch(`http://localhost:8080/api/routes/raw?${params.toString()}`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(`Backend error: ${response.status} - ${JSON.stringify(errorData)}`);
+      }
+      const data = await response.json();
+      let backendRoutes: any[] = [];
+      if (Array.isArray(data.routes)) {
+        backendRoutes = data.routes.map((route: any, idx: number) => ({
+          id: `Route_${idx + 1}`,
+          name: `Route_${idx + 1}`,
+          duration: route.duration,
+          distance: route.distance,
+          pollutionLevel: 'medium',
+          label: `Route_${idx + 1}`,
+          path: route.coordinates,
+          avgExposureAqi: null,
+        }));
+      }
+      setRoutes(backendRoutes);
+
+      // 2. Fetch route process data for PM2.5, PM10, CO and AQI markers
+      const processResp = await fetch('http://localhost:8080/api/routes/process', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -49,163 +88,36 @@ const Dashboard: React.FC = () => {
           dLon: dest.lng,
         }),
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(`Backend error: ${response.status} - ${JSON.stringify(errorData)}`);
-      }
-      const data = await response.json();
-
-      // Flexible Data Hydration
-      // 1) Routes: backend may return `routes` array OR `route_analysis` object (Route_1, Route_2...)
-      let backendRoutes: any[] = [];
-      if (data.route_analysis && typeof data.route_analysis === 'object') {
-        backendRoutes = Object.keys(data.route_analysis).map((key, idx) => {
-          const entry = data.route_analysis[key];
-          const details = entry?.details ?? [];
-          const path = details
-            .map((pt: any) => {
-              const loc = pt.location;
-              if (!loc) return null;
-              // backend commonly returns [lat, lon] but be defensive and normalize
-              let a = Number(loc[0]);
-              let b = Number(loc[1]);
-              if (Number.isNaN(a) || Number.isNaN(b)) return null;
-              // detect if values look like swapped (lon, lat) by range test
-              const looksLikeLatA = Math.abs(a) <= 90;
-              const looksLikeLatB = Math.abs(b) <= 90;
-              // prefer lat in [-90,90], lon in [-180,180]
-              let lat = a, lng = b;
-              if (!looksLikeLatA && looksLikeLatB) {
-                // swap
-                lat = b;
-                lng = a;
-              }
-              return { lat: Number(lat), lng: Number(lng) };
-            })
-            .filter(Boolean);
-
-          const avgAqi = entry?.avg_exposure_aqi ?? entry?.avg_aqi ?? null;
-          const pollutionLevel = avgAqi == null ? 'medium' : (avgAqi <= 100 ? 'low' : avgAqi <= 150 ? 'medium' : 'high');
-
-          return {
-            id: key,
-            name: key,
-            // prefer backend-provided duration/distance when available
-            duration: entry?.duration ?? entry?.duration_minutes ?? entry?.duration_min ?? undefined,
-            distance: entry?.distance_human ?? entry?.distance ?? undefined,
-            pollutionLevel,
-            label: key,
-            path,
-            avgExposureAqi: avgAqi,
-          };
-        });
-      } else {
-        backendRoutes = data.routes || data.routeOptions || [];
-      }
-
-      setRoutes(backendRoutes);
-
-      // 2) Air quality: prefer ground_truth if available
-      const gtStart = data?.ground_truth?.start_point;
-      const gtEnd = data?.ground_truth?.end_point;
-      if (gtStart || gtEnd) {
-        const aqiStart = gtStart?.aqi ?? null;
-        const aqiEnd = gtEnd?.aqi ?? null;
-        const avg = aqiStart != null && aqiEnd != null ? Math.round((aqiStart + aqiEnd) / 2) : (aqiStart ?? aqiEnd ?? null);
-        setAirQuality({
-          aqiIndex: avg,
-          kgSaved: null,
-          goalPercent: null,
-        });
-      } else {
-        const aq = data.airQuality ?? data.air_quality;
-        if (aq) {
-          setAirQuality({
-            aqiIndex: aq.aqiIndex ?? aq.aqi_index ?? aq.currentAqi ?? null,
-            kgSaved: aq.kgSaved ?? aq.kg_saved ?? null,
-            goalPercent: aq.goalPercent ?? aq.goal_percent ?? null,
+      if (processResp.ok) {
+        const processData = await processResp.json();
+        if (processData.route_analysis && typeof processData.route_analysis === 'object') {
+          // PM/CO summary for other widgets
+          // Store the full route_analysis entry for each route (including details)
+          const sensorsArr = Object.keys(processData.route_analysis).map((key) => processData.route_analysis[key]);
+          setRouteSensorData(sensorsArr);
+          // Extract AQI/location pairs from details arrays for all routes
+          const allMarkers: { location: [number, number]; aqi: number }[] = [];
+          Object.values(processData.route_analysis).forEach((route: any) => {
+            if (Array.isArray(route.details)) {
+              route.details.forEach((d: any) => {
+                if (Array.isArray(d.location) && typeof d.aqi === 'number') {
+                  allMarkers.push({ location: d.location, aqi: d.aqi });
+                }
+              });
+            }
           });
+          setAqiMarkers(allMarkers);
+        } else {
+          setRouteSensorData([]);
+          setAqiMarkers([]);
         }
-      }
-
-      // 3) Sensors / pollutant mapping: prefer ground_truth start_point for pm25/pm10
-      // Also try to extract common weather fields from route_analysis details if available
-      const extractFromDetail = () => {
-        // pick first available detail point from any route_analysis entry
-        if (data.route_analysis && typeof data.route_analysis === 'object') {
-          for (const k of Object.keys(data.route_analysis)) {
-            const first = data.route_analysis[k]?.details?.[0];
-            if (first) return first;
-          }
-        }
-        return null;
-      };
-
-      const detailSample = extractFromDetail();
-
-      const pickHumidity = (obj: any) => obj?.humidity ?? obj?.hum ?? obj?.rh ?? obj?.relative_humidity ?? obj?.relativeHumidity ?? obj?.humid ?? null;
-      const pickTemp = (obj: any) => obj?.temperature ?? obj?.temp ?? obj?.temp_c ?? obj?.air_temp ?? obj?.temperature_c ?? obj?.t ?? null;
-      const pickWind = (obj: any) => obj?.windSpeed ?? obj?.wind_speed ?? obj?.wind_kph ?? obj?.wind_mps ?? obj?.wind ?? obj?.wind_m_s ?? null;
-
-      if (gtStart) {
-        setSensors({
-          humidity: pickHumidity(gtStart) ?? (detailSample ? pickHumidity(detailSample) : null),
-          temperature: pickTemp(gtStart) ?? (detailSample ? pickTemp(detailSample) : null),
-          windSpeed: pickWind(gtStart) ?? (detailSample ? pickWind(detailSample) : null),
-          pm25: gtStart.pm25 ?? gtStart.pm_2_5 ?? null,
-          pm10: gtStart.pm10 ?? gtStart.pm_10 ?? null,
-        });
       } else {
-        const snsr = data.sensors ?? data.sensorData ?? data.sensor_data;
-        if (snsr) {
-          setSensors({
-            humidity: pickHumidity(snsr) ?? (detailSample ? pickHumidity(detailSample) : null),
-            temperature: pickTemp(snsr) ?? (detailSample ? pickTemp(detailSample) : null),
-            windSpeed: pickWind(snsr) ?? (detailSample ? pickWind(detailSample) : null),
-            pm25: snsr.pm25 ?? snsr.pm_2_5 ?? snsr.pm2_5 ?? snsr.pm_2dot5 ?? null,
-            pm10: snsr.pm10 ?? snsr.pm_10 ?? snsr.pm10_ug ?? null,
-          });
-        } else if (detailSample) {
-          setSensors({
-            humidity: pickHumidity(detailSample) ?? null,
-            temperature: pickTemp(detailSample) ?? null,
-            windSpeed: pickWind(detailSample) ?? null,
-            pm25: detailSample.pm25 ?? detailSample.pm_2_5 ?? null,
-            pm10: detailSample.pm10 ?? detailSample.pm_10 ?? null,
-          });
-        }
-      }
-
-      // Forecast: prefer explicit forecast arrays
-      setForecast(data.forecast || data.forecastBars || []);
-
-      // 🔥 Fetch AI predictions after route processing
-      try {
-        const predictionResponse = await fetch('http://localhost:8080/api/routes/predict', {
-          method: 'GET',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-        if (predictionResponse.ok) {
-          const predictionData = await predictionResponse.json();
-          if (predictionData.forecast_data?.station_0) {
-            const forecastArray = predictionData.forecast_data.station_0.map((item: { time: string; aqi: number; health_info?: { category: string; color: string } }) => ({
-              time: item.time,
-              value: item.aqi,
-              level: item.health_info?.category?.toLowerCase() === 'low' ? 'low' :
-                item.health_info?.category?.toLowerCase() === 'high' ? 'high' :
-                  'medium',
-            }));
-            setForecast(forecastArray);
-          }
-        }
-      } catch (predictionError) {
-        console.warn('AI prediction fetch failed, using default forecast:', predictionError);
+        setRouteSensorData([]);
+        setAqiMarkers([]);
       }
     } catch (error) {
-      console.error('Error fetching EcoRoute data:', error);
+      console.error('Error fetching raw route/process data:', error);
+      setRouteSensorData([]);
     }
   }, []);
 
@@ -214,11 +126,11 @@ const Dashboard: React.FC = () => {
     if (!originCoords || !destinationCoords) return;
 
     const timeout = setTimeout(() => {
-      fetchEcoData(originCoords, destinationCoords);
+      fetchRawRouteMarkers(originCoords, destinationCoords);
     }, 800); // throttle backend calls
 
     return () => clearTimeout(timeout);
-  }, [originCoords, destinationCoords]);
+  }, [originCoords, destinationCoords, fetchRawRouteMarkers]);
 
   // 🔥 Handle logo click to redirect to landing page
   const handleLogoClick = useCallback(() => {
@@ -234,7 +146,7 @@ const Dashboard: React.FC = () => {
     // 🔥 Clear old data when new search begins
     setRoutes([]);
     setAirQuality(null);
-    setSensors(null);
+    // setSensors(null); // removed, not needed
     setForecast(null);
     setRouteInfo(null);
 
@@ -302,6 +214,19 @@ const Dashboard: React.FC = () => {
         backendRoutes={routes}
         selectedRouteIndex={selectedRoute}
         onRouteSelect={setSelectedRoute}
+        aqiMarkers={(() => {
+          if (selectedRoute == null) return [];
+          // Only show AQI markers for the selected route
+          if (Array.isArray(routeSensorData) && routeSensorData[selectedRoute] && Array.isArray(routeSensorData[selectedRoute].details)) {
+            return routeSensorData[selectedRoute].details
+              .filter((d: any) => Array.isArray(d.location) && typeof d.aqi === 'number')
+              .map((d: any) => ({
+                location: d.location,
+                aqi: d.aqi
+              }));
+          }
+          return [];
+        })()}
       />
 
       <main className="dashboard-content">
@@ -319,7 +244,24 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        <SensorReadings isDarkMode={isDarkMode} data={sensors} />
+        <SensorReadings
+          isDarkMode={isDarkMode}
+          data={(() => {
+            if (selectedRoute != null && routeSensorData[selectedRoute]) {
+              const r = routeSensorData[selectedRoute];
+              // Only pass summary stats, not details, and fill required fields
+              return {
+                pm25: r?.avg_pm25 ?? null,
+                pm10: r?.avg_pm10 ?? null,
+                co: r?.avg_co ?? null,
+                humidity: 0,
+                temperature: 0,
+                windSpeed: 0,
+              };
+            }
+            return null;
+          })()}
+        />
         <EcoProCard isDarkMode={isDarkMode} />
       </main>
     </div>
